@@ -121,14 +121,19 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
             noOfTotalQuests++;
 
             // Iterate through all the conditions of the current quest
-            foreach (var currentCondition in currentQuest.Conditions.AvailableForFinish)
+            for (int i = 0; i < currentQuest.Conditions.AvailableForFinish.Count; ++i)
             {
+                var currentCondition = currentQuest.Conditions.AvailableForFinish[i];
+
                 // Check if condition is number tracker (Elimination etc.)
                 if (currentCondition.ConditionType == "CounterCreator")
                 {
                     // If it's a counter creator iterate through the subconditions
-                    foreach (QuestConditionCounterCondition currentSubCondition in currentCondition.Counter.Conditions)
+                    //foreach (QuestConditionCounterCondition currentSubCondition in currentCondition.Counter.Conditions)
+                    for (int j = 0; j < currentCondition.Counter.Conditions.Count; ++j)
                     {
+                        var currentSubCondition = currentCondition.Counter.Conditions[j];
+
                         // Check if the current subcondidtion is a kill condition and if it requires scav kills
                         if (currentSubCondition.ConditionType == "Kills" && currentSubCondition.Target.Item == "Savage")
                         {
@@ -140,8 +145,8 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                                     m_logger.Info($"Found a scav kill quest condidtion in quest: \"{currentQuest.Name}\" replacing kill condition with any");
                                 }
 
-                                // Replace condition with any target
-                                ProcessQuest(currentSubCondition);
+                                // Replace the condition target
+                                currentSubCondition.Target = new(null, "Any");
 
                                 if (verboseDebug)
                                 {
@@ -169,7 +174,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                                 }
 
                                 // Process quest to any target
-                                ProcessQuest(currentSubCondition);
+                                currentSubCondition.Target = new(null, "Any");
 
                                 // Check if we have harder pmcwithall turned on, if we do we need to double tha amouht needed
                                 if (harderPmc)
@@ -193,7 +198,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                                     }
                                 }
 
-    
+
                                 // Modify quest condidtion text
                                 ChangeQuestsText(currentCondition.Id);
 
@@ -245,7 +250,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                         return lazyloadedValueData;
                     });
                 }
-                
+
                 if (verboseDebug)
                 {
                     m_logger.Info($"New quest text is {null}");
