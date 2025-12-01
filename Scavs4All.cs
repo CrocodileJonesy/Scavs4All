@@ -1,7 +1,9 @@
-﻿using SPTarkov.DI.Annotations;
+﻿using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
+using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Helpers;
 using SPTarkov.Server.Core.Models.Common;
+using SPTarkov.Server.Core.Models.Eft.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using SPTarkov.Server.Core.Models.Logging;
 using SPTarkov.Server.Core.Models.Spt.Config;
@@ -20,6 +22,7 @@ using Quests = Dictionary<MongoId, SPTarkov.Server.Core.Models.Eft.Common.Tables
 
 // TODO: Add code to generate new config.json file if one is not found
 // TODO: Add quest blacklist to exclude certain quests from being modified
+// TODO: Add code to change 'Scav' or 'PMC' in quest text to 'Any Targets'
 
 public class S4AConfig
 {
@@ -46,12 +49,11 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     private string[] loggerBuffer;
 
     // Counter Vars
-    private int noOfScavQuestsModified = 0;
-    private int noOfPmcQuestsModified = 0;
-    private int noOfTotalQuests = 0;
-    private int noOfTotalQuestsModified = 0;
+    private int noOfScavQuestsModified;
+    private int noOfPmcQuestsModified;
+    private int noOfTotalQuests;
+    private int noOfTotalQuestsModified;
     private bool didHarderPmc = false;
-    private double newValue;
 
     // Database vars
     //private Dictionary<MongoId, TemplateItem>? _itemsDb;
@@ -89,6 +91,12 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
             return Task.CompletedTask;
         }
 
+        // Check if pmc quests are being modified
+        if (debug && verboseDebug)
+        {
+            m_logger.Warning($"Harder PMC quest count is {(harderPmc ? $"enabled and set to {harderPmcMultiplier}." : "disabled, not modifying quest counts")}");
+        }
+
         // Replace quests conditions and text
         ChangeTargets(quests);
 
@@ -107,7 +115,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
         // Debugging
         if (verboseDebug)
         {
-            m_logger.Info("Iterating through quests");
+            m_logger.Info($"Scavs4All: Iterating through {quests.Count} quests");
         }
         else
         {
@@ -123,6 +131,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
             // Iterate through all the conditions of the current quest
             for (int i = 0; i < currentQuest.Conditions.AvailableForFinish.Count; ++i)
             {
+                // Get quest condition
                 var currentCondition = currentQuest.Conditions.AvailableForFinish[i];
 
                 // Check if condition is number tracker (Elimination etc.)
@@ -132,81 +141,105 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                     //foreach (QuestConditionCounterCondition currentSubCondition in currentCondition.Counter.Conditions)
                     for (int j = 0; j < currentCondition.Counter.Conditions.Count; ++j)
                     {
+                        // Get conditition parameterts 
                         var currentSubCondition = currentCondition.Counter.Conditions[j];
 
-                        // Check if the current subcondidtion is a kill condition and if it requires scav kills
-                        if (currentSubCondition.ConditionType == "Kills" && currentSubCondition.Target.Item == "Savage")
+                        // Edit quest
+                        ProcessQuest(currentQuest, currentCondition, ref currentSubCondition);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Process a quest target to change it to any
+    /// </summary>
+    /// <param name="currentQuest">The quest</param>
+    /// <param name="currentCondition">The quest condidtion</param>
+    /// <param name="currentSubCondition">The sub conditions of the condition</param>
+    private void ProcessQuest(Quest currentQuest, QuestCondition currentCondition, ref QuestConditionCounterCondition currentSubCondition)
+    {
+        // Check if the current subcondidtion is a kill condition
+        if (currentSubCondition.ConditionType == "Kills")
+        {
+            // Bools for ease of checking & reuse
+            bool isScavKillQuest = currentSubCondition.Target.Item == "Savage"; // Scav
+            bool isNotBossKillQuest = currentSubCondition.SavageRole == null || currentSubCondition.SavageRole.Count == 0; // Boss kill
+            bool isPmcKillQuest = currentSubCondition.Target.Item == "AnyPmc"; // Pmc kill
+
+            // Check if quest is scav kill or PMC kill (if enabled) and set target
+            if (isScavKillQuest || (isPmcKillQuest && replacePMC))
+            {
+                // Make sure the quest isn't a quest to kill bosses
+                if (isNotBossKillQuest)
+                {
+                    // Found quest debug
+                    if (debug)
+                    {
+                        if (verboseDebug)
                         {
-                            // Make sure the quest isn't a quest to kill bosses
-                            if (currentSubCondition.SavageRole == null || currentSubCondition.SavageRole.Count == 0)
+                            m_logger.Info($"Found a {((currentSubCondition.Target.Item == "Savage") ? "scav kill" : "PMC Kill")} quest condition in quest: \"{currentQuest.QuestName}\":");
+                        }
+                        else
+                        {
+                            m_logger.Info($"Found {(replacePMC ? "PMC" : "Scav")} kill quest {currentQuest.QuestName} [{currentQuest.Id}]");
+                        }
+                    }
+
+                    // Replace the condition target
+                    currentSubCondition.Target = new(null, "Any");
+
+                    // Validate condition target
+                    if (currentSubCondition.Target.Item != "Any" && debug && verboseDebug)
+                    {
+                        m_logger.Error($"Quest target change of quest: {currentQuest.QuestName}[{currentQuest.Id}] failed! If this error appears please contact mod author");
+                    }
+
+                    // If we are dealing with pmc quests and we want to scale the kill counter
+                    if (isPmcKillQuest && replacePMC && harderPmc)
+                    {
+                        // Var to store new kill value
+                        double newValue = 0d;
+                        double oldValue = currentCondition.Value.Value;
+
+                        // Get scaled up number of kills needed
+                        newValue = Math.Ceiling(currentCondition.Value.Value * harderPmcMultiplier);
+
+                        // Scale the kills, rounding up to nearest whole number
+                        currentCondition.Value = newValue;
+
+                        // Log pmc kill quests
+                        if (debug)
+                        {
+                            if (verboseDebug)
                             {
-                                if (debug)
-                                {
-                                    m_logger.Info($"Found a scav kill quest condidtion in quest: \"{currentQuest.Name}\" replacing kill condition with any");
-                                }
-
-                                // Replace the condition target
-                                currentSubCondition.Target = new(null, "Any");
-
-                                if (verboseDebug)
-                                {
-                                    m_logger.Info($"Quest ID is: {currentSubCondition.Id}");
-                                }
-
-                                // Modify quest condidtion text
-                                ChangeQuestsText(currentCondition.Id);
-
-                                // Track changed quests counters
-                                noOfTotalQuests++;
-                                noOfScavQuestsModified++;
+                                // Ternary operator to display if we scale up pmc kill quests
+                                m_logger.Success($"Doubling kill count for quest: {currentQuest.QuestName}[{currentQuest.Id}] from {oldValue} to {newValue}");
+                            }
+                            else
+                            {
+                                m_logger.Info($"Scaled PMC quest {currentQuest.QuestName}[{currentQuest.Id}]");
                             }
                         }
+                    }
 
-                        // If replace pmc quests is enabled
-                        if (replacePMC)
-                        {
-                            // Check if the quest is a pmc kill quest
-                            if (currentSubCondition.ConditionType == "Kills" && currentSubCondition.Target.Item == "AnyPmc")
-                            {
-                                if (debug)
-                                {
-                                    m_logger.Info($"Found a PMC kill quest condidtion in quest: \"{currentQuest.Name}\" replacing kill condition with any");
-                                }
+                    // Modify quest condidtion text
+                    UpdateQuestText(currentQuest, currentCondition.Id);
 
-                                // Process quest to any target
-                                currentSubCondition.Target = new(null, "Any");
+                    // Track changed quests counters
+                    ++noOfTotalQuestsModified;
 
-                                // Check if we have harder pmcwithall turned on, if we do we need to double tha amouht needed
-                                if (harderPmc)
-                                {
-                                    // Get scaled up number of kills needed
-                                    newValue = currentCondition.Value.Value * harderPmcMultiplier;
-
-                                    if (debug)
-                                    {
-                                        m_logger.Info($"Harder PMC replacement conditions are ON and set to {harderPmcMultiplier}. Doubling kill count for: {currentQuest.Name} from {currentCondition.Value} to {Math.Round(newValue)}");
-                                    }
-
-                                    // Scale the kills, rounding up to nearest whole number
-                                    currentCondition.Value = Math.Ceiling(newValue);
-                                }
-                                else
-                                {
-                                    if (debug)
-                                    {
-                                        m_logger.Info($"Harder PMC replacement conditions are OFF, not modifying quest conditions");
-                                    }
-                                }
-
-
-                                // Modify quest condidtion text
-                                ChangeQuestsText(currentCondition.Id);
-
-                                // Track changed quests counters
-                                noOfTotalQuestsModified++;
-                                noOfPmcQuestsModified++;
-                            }
-                        }
+                    // Track changed scav/pmc quests
+                    if (isScavKillQuest)
+                    {
+                        // Track changed scav quests counter
+                        ++noOfScavQuestsModified;
+                    }
+                    else if (isPmcKillQuest && replacePMC)
+                    {
+                        // Track changed pmc quests counter
+                        ++noOfPmcQuestsModified;
                     }
                 }
             }
@@ -217,75 +250,50 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     /// Changes relevant quest text with s4a text
     /// </summary>
     /// <param name="questTextID">MongoID of the quest to modify</param>
-    private void ChangeQuestsText(MongoId? questTextID)
+    private void UpdateQuestText(Quest quest, MongoId? questTextID)
     {
-        // No locale with ID found
-        if (questTextID == null)
+        bool validatedLocale = false;
+
+        // Find the locale
+        if (localesDb.ContainsKey(questTextID.Value))
         {
-            if (debug)
+            if (debug && !verboseDebug)
             {
-                m_logger.Warning("Quest text ID is null, cannot change quest text");
+                m_logger.Success($"Quest locale for {questTextID} found!");
             }
 
-            return;
-        }
-        else // ID exists
-        {
-            // Find the locale
-            if (localesDb.ContainsKey(questTextID.Value))
+            // Edit quest condition text, through a transformer, since SPT uses lazy loading for locales
+            if (databaseService.GetLocales().Global.TryGetValue("en", out var lazyloadedValue))
             {
-
-                if (verboseDebug)
+                lazyloadedValue.AddTransformer(lazyloadedValueData =>
                 {
-                    m_logger.Info($"Quest text found! Original text is {null}");
-                }
+                    // Append (S4A) to the end of the quest text
+                    lazyloadedValueData[questTextID.Value] += " (S4A)";
+                    return lazyloadedValueData;
+                });
 
+                // Validate text change
+                validatedLocale = lazyloadedValue.Value[questTextID].Contains(" (S4A)");
 
-                // Edit quest condition text, through a transformer, since SPT uses lazy loading for locales
-                if (databaseService.GetLocales().Global.TryGetValue("en", out var lazyloadedValue))
+                // Debug output for validated locale change
+                if (debug && verboseDebug)
                 {
-                    lazyloadedValue.AddTransformer(lazyloadedValueData =>
+                    if (validatedLocale)
                     {
-                        lazyloadedValueData[questTextID.Value] += " (S4A)";
-                        return lazyloadedValueData;
-                    });
+                        m_logger.Success($"Sucessfully appended quest {quest.QuestName}[{quest.Id}] locale text");
+                    }
+                    else
+                    {
+                        m_logger.Error($"Quest text modification for quest {quest.QuestName}[{quest.Id}] failed! If this error appears please contact mod author");
+                    }
                 }
-
-                if (verboseDebug)
+                else if(!validatedLocale)
                 {
-                    m_logger.Info($"New quest text is {null}");
+                    m_logger.Error($"Quest text modification failed, please enable debug & verbosedebug in the config file for more info");
                 }
             }
         }
     }
-
-    /// <summary>
-    /// Process quest condition to replace target with any
-    /// </summary>
-    /// <param name="specificCondition">The requirements for a condition to modify</param>
-    private static void ProcessQuest(QuestConditionCounterCondition specificCondition)
-    {
-
-        // Replace condition with any target
-        var target = specificCondition.Target;
-
-        // Process quest conditions
-        if (target.IsItem)
-        {
-            var item = target.Item;
-            item = "Any";
-        }
-        //else if (target.IsList)
-        //{
-        //    var list = target.List;
-
-        //    for (int i = 0; i < list.Count; ++i)
-        //    {
-        //        list[i] = "Any";
-        //    }
-        //}
-    }
-
 
     /// <summary>
     /// Print summary of quest modfications
@@ -308,11 +316,11 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
 
         if (!didHarderPmc)
         {
-            m_logger.Success("Did not modify PMC kill quests");
+            m_logger.Warning("Did not scale PMC kill quest counts");
         }
         else
         {
-            m_logger.Warning($"Scaled requied kills for PMC kill quests by {harderPmcMultiplier * 100}%");
+            m_logger.Success($"Scaled requied kills for PMC kill quests by {harderPmcMultiplier * 100}%");
         }
         m_logger.Info("--------------------------------------------");
     }
