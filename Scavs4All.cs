@@ -14,35 +14,48 @@ using SPTarkov.Server.Core.Services;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json.Serialization;
+using System.IO;
+using System.Text.Json;
+using SPTarkov.Server.Core.Utils;
 
 namespace Scavs4All;
 
 // Alias for easier access to quests dictionary
 using Quests = Dictionary<MongoId, SPTarkov.Server.Core.Models.Eft.Common.Tables.Quest>;
 
-// TODO: Add code to generate new config.json file if one is not found
 // TODO: Add quest blacklist to exclude certain quests from being modified
 // TODO: Add code to change 'Scav' or 'PMC' in quest text to 'Any Targets'
+// TODO: Add support for scaling up scav quests
+// TODO: Add support for including quests that aren't scav or pmc
+// TODO: Add support for daily quests?
+// TODO: Possibly add support for for raiders, rogues, cultists & bosses count as PMCs
 
 public class S4AConfig
 {
     //[JsonPropertyName("ReplacePMCWithAll")]
-    public bool ReplacePMCWithAll { get; set; }
-    public bool HarderPMCWithAll { get; set; }
-    public int HarderPMCMultiplier { get; set; }
-    public bool debug { get; set; }
-    public bool verboseDebug { get; set; }
+    public bool ReplacePmcWithAll { get; set; }
+    public bool ScalePmcQuests { get; set; }
+    public int ScalePmcMultiplier { get; set; }
+    public bool EnableDebug { get; set; }
+    public bool EnableVerboseDebug { get; set; }
 }
 
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 1)]
-public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logger, LocaleService localeService, ModHelper modHelper, DatabaseService databaseService) : IOnLoad
+// Load way after to include any other custom quests
+[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 99999)]
+public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logger, LocaleService localeService, ModHelper modHelper, JsonUtil jsonUtil, DatabaseService databaseService) : IOnLoad
 {
-    // Config vars
-    private bool replacePMC;
-    private bool harderPmc;
-    private double harderPmcMultiplier = 1d;
-    private bool debug;
-    private bool verboseDebug;
+    // Loaded config file
+    private S4AConfig s4aConfig;
+
+    // Default config, should file be missing
+    private readonly S4AConfig defaultConfig = new()
+    {
+        ReplacePmcWithAll = false,
+        ScalePmcQuests = false,
+        ScalePmcMultiplier = 2,
+        EnableDebug = false,
+        EnableVerboseDebug = false
+    };
 
     // Logger
     private ISptLogger<Scavs4All> m_logger;
@@ -68,33 +81,38 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
         this.m_logger = logger;
 
         // Config vars
-        string pathToMod;
-        S4AConfig config;
+        string pathToMod = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly()); ;
+        string fullPath = System.IO.Path.Combine(pathToMod, "config.json");
 
         // Load config file
         try
         {
             // Load config file (Var names must match names in json file, otherwise [JsonPropertyName("")] needs to be used)
-            pathToMod = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
-            config = modHelper.GetJsonDataFromFile<S4AConfig>(pathToMod, "config.json");
-
-            // Set config vars from config file
-            replacePMC = config.ReplacePMCWithAll;
-            harderPmc = config.HarderPMCWithAll;
-            harderPmcMultiplier = config.HarderPMCMultiplier;
-            debug = config.debug;
-            verboseDebug = config.verboseDebug;
+            s4aConfig = modHelper.GetJsonDataFromFile<S4AConfig>(pathToMod, "config.json");
         }
         catch (Exception e) // Config file not found
         {
-            m_logger.Error($"Scavs4All: Error loading config file: {e.Message}");
-            return Task.CompletedTask;
+            if (!File.Exists(fullPath))
+            {
+                m_logger.Warning("Scavs4All: Config file not found, generating default config file");
+
+                // Generate default config file
+                string config = jsonUtil.Serialize(defaultConfig, true);
+                File.WriteAllText(fullPath, config);
+
+                // Since no config file, assign default config as main config
+                s4aConfig = defaultConfig;
+            }
+            else
+            {
+                m_logger.Warning($"Scavs4All: Error loading config file: {e.Message}");
+            }
         }
 
         // Check if pmc quests are being modified
-        if (debug && verboseDebug)
+        if (s4aConfig.EnableDebug && s4aConfig.EnableVerboseDebug)
         {
-            m_logger.Warning($"Harder PMC quest count is {(harderPmc ? $"enabled and set to {harderPmcMultiplier}." : "disabled, not modifying quest counts")}");
+            m_logger.Warning($"Harder PMC quest count is {(s4aConfig.ScalePmcQuests ? $"enabled and set to {s4aConfig.ScalePmcMultiplier}." : "disabled, not modifying quest counts")}");
         }
 
         // Replace quests conditions and text
@@ -113,7 +131,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     private void ChangeTargets(Quests quests)
     {
         // Debugging
-        if (verboseDebug)
+        if (s4aConfig.EnableVerboseDebug)
         {
             m_logger.Info($"Scavs4All: Iterating through {quests.Count} quests");
         }
@@ -169,21 +187,21 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
             bool isPmcKillQuest = currentSubCondition.Target.Item == "AnyPmc"; // Pmc kill
 
             // Check if quest is scav kill or PMC kill (if enabled) and set target
-            if (isScavKillQuest || (isPmcKillQuest && replacePMC))
+            if (isScavKillQuest || (isPmcKillQuest && s4aConfig.ReplacePmcWithAll))
             {
                 // Make sure the quest isn't a quest to kill bosses
                 if (isNotBossKillQuest)
                 {
                     // Found quest debug
-                    if (debug)
+                    if (s4aConfig.EnableDebug)
                     {
-                        if (verboseDebug)
+                        if (s4aConfig.EnableVerboseDebug)
                         {
                             m_logger.Info($"Found a {((currentSubCondition.Target.Item == "Savage") ? "scav kill" : "PMC Kill")} quest condition in quest: \"{currentQuest.QuestName}\":");
                         }
                         else
                         {
-                            m_logger.Info($"Found {(replacePMC ? "PMC" : "Scav")} kill quest {currentQuest.QuestName} [{currentQuest.Id}]");
+                            m_logger.Info($"Found {(s4aConfig.ReplacePmcWithAll ? "PMC" : "Scav")} kill quest {currentQuest.QuestName} [{currentQuest.Id}]");
                         }
                     }
 
@@ -191,28 +209,28 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                     currentSubCondition.Target = new(null, "Any");
 
                     // Validate condition target
-                    if (currentSubCondition.Target.Item != "Any" && debug && verboseDebug)
+                    if (currentSubCondition.Target.Item != "Any" && s4aConfig.EnableDebug && s4aConfig.EnableVerboseDebug)
                     {
                         m_logger.Error($"Quest target change of quest: {currentQuest.QuestName}[{currentQuest.Id}] failed! If this error appears please contact mod author");
                     }
 
                     // If we are dealing with pmc quests and we want to scale the kill counter
-                    if (isPmcKillQuest && replacePMC && harderPmc)
+                    if (isPmcKillQuest && s4aConfig.ReplacePmcWithAll && s4aConfig.ScalePmcQuests)
                     {
                         // Var to store new kill value
                         double newValue = 0d;
                         double oldValue = currentCondition.Value.Value;
 
                         // Get scaled up number of kills needed
-                        newValue = Math.Ceiling(currentCondition.Value.Value * harderPmcMultiplier);
+                        newValue = Math.Ceiling(currentCondition.Value.Value * s4aConfig.ScalePmcMultiplier);
 
                         // Scale the kills, rounding up to nearest whole number
                         currentCondition.Value = newValue;
 
                         // Log pmc kill quests
-                        if (debug)
+                        if (s4aConfig.EnableDebug)
                         {
-                            if (verboseDebug)
+                            if (s4aConfig.EnableVerboseDebug)
                             {
                                 // Ternary operator to display if we scale up pmc kill quests
                                 m_logger.Success($"Doubling kill count for quest: {currentQuest.QuestName}[{currentQuest.Id}] from {oldValue} to {newValue}");
@@ -236,7 +254,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                         // Track changed scav quests counter
                         ++noOfScavQuestsModified;
                     }
-                    else if (isPmcKillQuest && replacePMC)
+                    else if (isPmcKillQuest && s4aConfig.ReplacePmcWithAll)
                     {
                         // Track changed pmc quests counter
                         ++noOfPmcQuestsModified;
@@ -257,7 +275,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
         // Find the locale
         if (localesDb.ContainsKey(questTextID.Value))
         {
-            if (debug && !verboseDebug)
+            if (s4aConfig.EnableDebug && !s4aConfig.EnableVerboseDebug)
             {
                 m_logger.Success($"Quest locale for {questTextID} found!");
             }
@@ -276,7 +294,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                 validatedLocale = lazyloadedValue.Value[questTextID].Contains(" (S4A)");
 
                 // Debug output for validated locale change
-                if (debug && verboseDebug)
+                if (s4aConfig.EnableDebug && s4aConfig.EnableVerboseDebug)
                 {
                     if (validatedLocale)
                     {
@@ -287,7 +305,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                         m_logger.Error($"Quest text modification for quest {quest.QuestName}[{quest.Id}] failed! If this error appears please contact mod author");
                     }
                 }
-                else if(!validatedLocale)
+                else if (!validatedLocale)
                 {
                     m_logger.Error($"Quest text modification failed, please enable debug & verbosedebug in the config file for more info");
                 }
@@ -300,28 +318,32 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     /// </summary>
     private void PrintSummary()
     {
-        didHarderPmc = false;
-
-        if (replacePMC && harderPmc)
-        {
-            didHarderPmc = true;
-        }
-
         m_logger.Success("Scavs4All: finished searching quest DB!");
         m_logger.Info("--------------------------------------------");
         m_logger.Success($"Found a total of {noOfTotalQuests} quests");
         m_logger.Success($"Modified a total of {noOfTotalQuestsModified} quests");
         m_logger.Success($"Modified {noOfScavQuestsModified} scav kill quests");
-        m_logger.Success($"Modified {noOfPmcQuestsModified} PMC kill quests");
 
-        if (!didHarderPmc)
+        // If PMC quests are being changed
+        if (s4aConfig.ReplacePmcWithAll)
         {
-            m_logger.Warning("Did not scale PMC kill quest counts");
+            m_logger.Success($"Modified {noOfPmcQuestsModified} PMC kill quests");
         }
         else
         {
-            m_logger.Success($"Scaled requied kills for PMC kill quests by {harderPmcMultiplier * 100}%");
+            logger.Warning("Did not modify PMC kill quests");
         }
+
+        // If PMC quests are being scaled
+        if (s4aConfig.ReplacePmcWithAll && s4aConfig.ScalePmcQuests)
+        {
+            m_logger.Success($"Scaled requied kills for PMC kill quests by {s4aConfig.ScalePmcMultiplier * 100}%");
+        }
+        else
+        {
+            m_logger.Warning("Did not scale PMC kill quests");
+        }
+
         m_logger.Info("--------------------------------------------");
     }
 }
