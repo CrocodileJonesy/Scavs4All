@@ -35,7 +35,7 @@ public class S4AConfig
     //[JsonPropertyName("ReplacePMCWithAll")]
     public bool ReplacePmcWithAll { get; set; }
     public bool ScalePmcQuests { get; set; }
-    public int ScalePmcMultiplier { get; set; }
+    public float ScalePmcMultiplier { get; set; }
     public bool EnableDebug { get; set; }
     public bool EnableVerboseDebug { get; set; }
 }
@@ -94,7 +94,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
         {
             if (!File.Exists(fullPath))
             {
-                m_logger.Warning("Scavs4All: Config file not found, generating default config file");
+                logger.Warning("Scavs4All: Config file not found, generating default config file");
 
                 // Generate default config file
                 string config = jsonUtil.Serialize(defaultConfig, true);
@@ -105,7 +105,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
             }
             else
             {
-                m_logger.Warning($"Scavs4All: Error loading config file: {e.Message}");
+                logger.Error($"Scavs4All: Error loading config file: {e.Message}");
             }
         }
 
