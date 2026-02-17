@@ -92,6 +92,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
         }
         catch (Exception e) // Config file not found
         {
+            // If config doesn't exist, make one
             if (!File.Exists(fullPath))
             {
                 logger.Warning("Scavs4All: Config file not found, generating default config file");
@@ -103,9 +104,11 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                 // Since no config file, assign default config as main config
                 s4aConfig = defaultConfig;
             }
-            else
+            else // Some other invalid config error
             {
                 logger.Error($"Scavs4All: Error loading config file: {e.Message}");
+                logger.Error("Scavs4All: Mod NOT loaded, please contact mod author with above error");
+                return Task.CompletedTask;
             }
         }
 
