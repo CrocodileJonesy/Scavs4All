@@ -1,22 +1,25 @@
 ﻿using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
+using SPTarkov.Common.Models.Logging;
 using SPTarkov.DI.Annotations;
 using SPTarkov.Server.Core.DI;
 using SPTarkov.Server.Core.Helpers;
+using SPTarkov.Server.Core.Helpers.Server;
 using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
-using SPTarkov.Server.Core.Models.Logging;
 using SPTarkov.Server.Core.Models.Spt.Config;
 using SPTarkov.Server.Core.Models.Spt.Mod;
-using SPTarkov.Server.Core.Models.Utils;
+using SPTarkov.Server.Core.Models.Spt.Tables;
 using SPTarkov.Server.Core.Servers;
 using SPTarkov.Server.Core.Services;
-using System.Diagnostics;
-using System.Reflection;
-using System.Text.Json.Serialization;
-using System.IO;
-using System.Text.Json;
+using SPTarkov.Server.Core.Services.Locales;
 using SPTarkov.Server.Core.Utils;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace Scavs4All;
 
@@ -28,7 +31,7 @@ using Quests = Dictionary<MongoId, SPTarkov.Server.Core.Models.Eft.Common.Tables
 // TODO: Add support for scaling up scav quests
 // TODO: Add support for including quests that aren't scav or pmc
 // TODO: Add support for daily quests?
-// TODO: Possibly add support for for raiders, rogues, cultists & bosses count as PMCs
+// TODO: Possibly add support for raiders, rogues, cultists & bosses count as PMCs
 
 public class S4AConfig
 {
@@ -41,8 +44,9 @@ public class S4AConfig
 }
 
 // Load way after to include any other custom quests
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 99999)]
-public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logger, LocaleService localeService, ModHelper modHelper, JsonUtil jsonUtil, DatabaseService databaseService) : IOnLoad
+[Injectable(TypePriority = OnLoadOrder.PostLoad + 99999)]
+public class Scavs4All(GlobalTable globalTable, TemplateTable templateTable, LocaleTable localeTable, LocaleService localeService, ISptLogger<Scavs4All> logger, ModHelper modHelper, JsonUtil jsonUtil) 
+    : IOnLoad
 {
     // Loaded config file
     private S4AConfig s4aConfig;
@@ -50,11 +54,12 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     // Default config, should file be missing
     private readonly S4AConfig defaultConfig = new()
     {
-        ReplacePmcWithAll = false,
-        ScalePmcQuests = false,
-        ScalePmcMultiplier = 2,
-        EnableDebug = false,
-        EnableVerboseDebug = false
+        ReplacePmcWithAll = false, // Allow scavs to be included in PMC kill quests
+        ScalePmcQuests = false, // Allow PMC kill quests to  be scaled
+        ScalePmcMultiplier = 2, // The amount to scale PMC kill quests by
+        EnableDebug = false, // Enable debug output to console
+        EnableVerboseDebug = false // Enable more detailed debug in console
+
     };
 
     // Logger
@@ -73,11 +78,10 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     private Dictionary<string, string> localesDb;
     private Quests quests;
 
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
-        //_itemsDb = databaseServer.GetTables().Templates.Items;
         localesDb = localeService.GetLocaleDb();
-        quests = databaseServer.GetTables().Templates.Quests;
+        quests = templateTable.Quests;
         this.m_logger = logger;
 
         // Config vars
@@ -236,7 +240,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                             if (s4aConfig.EnableVerboseDebug)
                             {
                                 // Ternary operator to display if we scale up pmc kill quests
-                                m_logger.Success($"Doubling kill count for quest: {currentQuest.QuestName}[{currentQuest.Id}] from {oldValue} to {newValue}");
+                                m_logger.Success($"Scaled up kill count for quest: {currentQuest.QuestName}[{currentQuest.Id}] from {oldValue} to {newValue}");
                             }
                             else
                             {
@@ -284,7 +288,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
             }
 
             // Edit quest condition text, through a transformer, since SPT uses lazy loading for locales
-            if (databaseService.GetLocales().Global.TryGetValue("en", out var lazyloadedValue))
+            if (localeTable.Global.TryGetValue("en", out var lazyloadedValue))
             {
                 lazyloadedValue.AddTransformer(lazyloadedValueData =>
                 {
