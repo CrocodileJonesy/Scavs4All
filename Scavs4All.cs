@@ -32,12 +32,12 @@ using Quests = Dictionary<MongoId, SPTarkov.Server.Core.Models.Eft.Common.Tables
 
 public class S4AConfig
 {
-    //[JsonPropertyName("ReplacePMCWithAll")]
-    public bool ReplacePmcWithAll { get; set; }
-    public bool ScalePmcQuests { get; set; }
-    public float ScalePmcMultiplier { get; set; }
-    public bool EnableDebug { get; set; }
-    public bool EnableVerboseDebug { get; set; }
+    public bool ReplacePmcWithAll { get; set; }  // Allow scavs to be included in PMC kill quests
+    public bool ScalePmcQuests { get; set; }     // Allow PMC kill quests to  be scaled
+    public float ScalePmcMultiplier { get; set; }  // The amount to scale PMC kill quests by}
+    public bool IgnoreRoundingUp { get; set; }   // Ignore rounding up of quest counts
+    public bool EnableDebug { get; set; }        // Enable debug output to console
+    public bool EnableVerboseDebug { get; set; } // Enable more detailed debug in console
 }
 
 // Load way after to include any other custom quests
@@ -50,12 +50,16 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
     // Default config, should file be missing
     private readonly S4AConfig defaultConfig = new()
     {
-        ReplacePmcWithAll = false,
-        ScalePmcQuests = false,
-        ScalePmcMultiplier = 2,
-        EnableDebug = false,
-        EnableVerboseDebug = false
+        ReplacePmcWithAll = false,  // Allow scavs to be included in PMC kill quests
+        ScalePmcQuests = false,     // Allow PMC kill quests to  be scaled
+        ScalePmcMultiplier = 2,     // The amount to scale PMC kill quests by
+        IgnoreRoundingUp = false,   // Ignore rounding up of quest counts
+        EnableDebug = false,        // Enable debug output to console
+        EnableVerboseDebug = false  // Enable more detailed debug in console
     };
+
+    // config file keyword
+    private const string CONFIG_JSON = "config.json";
 
     // Logger
     private ISptLogger<Scavs4All> m_logger;
@@ -82,13 +86,13 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
 
         // Config vars
         string pathToMod = modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly()); ;
-        string fullPath = System.IO.Path.Combine(pathToMod, "config.json");
+        string fullPath = System.IO.Path.Combine(pathToMod, CONFIG_JSON);
 
         // Load config file
         try
         {
             // Load config file (Var names must match names in json file, otherwise [JsonPropertyName("")] needs to be used)
-            s4aConfig = modHelper.GetJsonDataFromFile<S4AConfig>(pathToMod, "config.json");
+            s4aConfig = modHelper.GetJsonDataFromFile<S4AConfig>(pathToMod, CONFIG_JSON);
         }
         catch (Exception e) // Config file not found
         {
@@ -225,7 +229,7 @@ public class Scavs4All(DatabaseServer databaseServer, ISptLogger<Scavs4All> logg
                         double oldValue = currentCondition.Value.Value;
 
                         // Get scaled up number of kills needed
-                        newValue = Math.Ceiling(currentCondition.Value.Value * s4aConfig.ScalePmcMultiplier);
+                        newValue = (!s4aConfig.IgnoreRoundingUp) ? Math.Ceiling(currentCondition.Value.Value * s4aConfig.ScalePmcMultiplier) : Math.Floor(currentCondition.Value.Value * s4aConfig.ScalePmcMultiplier);
 
                         // Scale the kills, rounding up to nearest whole number
                         currentCondition.Value = newValue;
